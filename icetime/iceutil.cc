@@ -32,8 +32,15 @@
 #  include <unistd.h>
 #endif
 
-#ifdef __FreeBSD__
+#if defined(__FreeBSD__)
 #  include <sys/sysctl.h>
+#elif defined(__OpenBSD__)
+#  include <stdio.h>
+#  include <stdlib.h>
+#  include <string.h>
+#  include <unistd.h>
+#  include <sys/sysctl.h>
+#  include <sys/stat.h>
 #endif
 
 #include <limits.h>
@@ -114,6 +121,77 @@ std::string proc_self_dirname()
 	std::string path;
 	for (i = 0; shortpath[i]; i++)
 		path += char(shortpath[i]);
+	return path;
+}
+#elif defined(__OpenBSD__)
+// This implementation is heavily based on
+// https://stackoverflow.com/a/31495527/3801517
+std::string proc_self_dirname() {
+	int mib[4];
+	char **argv;
+	size_t len;
+	const char *comm;
+	int ok = 0;
+	char epath[PATH_MAX];
+
+	mib[0] = CTL_KERN;
+	mib[1] = KERN_PROC_ARGS;
+	mib[2] = getpid();
+	mib[3] = KERN_PROC_ARGV;
+
+	if (sysctl(mib, 4, NULL, &len, NULL, 0) != 0) {
+                fprintf(stderr, "fatal error: sysctl failed: %s\n", strerror(errno));
+		exit(EXIT_FAILURE);
+	}
+
+	if (!(argv = (char**)malloc(len))) {
+		fprintf(stderr, "fatal error: malloc failed: %s\n", strerror(errno));
+		exit(EXIT_FAILURE);
+	}
+
+	if (sysctl(mib, 4, argv, &len, NULL, 0) != 0) {
+                fprintf(stderr, "fatal error: sysctl failed: %s\n", strerror(errno));
+		exit(EXIT_FAILURE);
+	}
+
+	comm = argv[0];
+
+	if (*comm == '/' || *comm == '.') {
+		if (realpath(comm, epath))
+			ok = 1;
+	} else {
+		char *sp;
+		char *xpath = strdup(getenv("PATH"));
+		char *path = strtok_r(xpath, ":", &sp);
+		struct stat st;
+
+		if (!xpath) {
+			fprintf(stderr, "fatal error: strdup failed: %s\n", strerror(errno));
+			exit(EXIT_FAILURE);
+		}
+
+		while (path) {
+			snprintf(epath, PATH_MAX, "%s/%s", path, comm);
+
+			if (!stat(epath, &st) && (st.st_mode & S_IXUSR)) {
+				ok = 1;
+				break;
+			}
+
+			path = strtok_r(NULL, ":", &sp);
+		}
+
+		free(xpath);
+	}
+
+	std::string path;
+	if (ok) {
+		len = strlen(epath);
+		while (len > 0 && epath[len-1] != '/')
+			len--;
+		path.assign(epath, len);
+	}
+	free(argv);
 	return path;
 }
 #elif defined(EMSCRIPTEN)
